@@ -1,61 +1,90 @@
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
-import time
 
-# -------------------------
-# existing setup (UI, params, geometry, etc.)
-# -------------------------
+st.set_page_config(layout="wide")
 
-# Example placeholders (keep your existing code here)
-slab_length = 4.0  # m
-slab_width = 1.2   # m
-slab_thickness = 0.2  # m
-n_steps = 500  # number of timesteps
-dt = 60        # timestep size in seconds
-nx, ny = 80, 40  # resolution for cross-section
+# -----------------------------
+# Sidebar controls
+# -----------------------------
+st.sidebar.header("Simulation Settings")
+T_plate = st.sidebar.slider("Heating Plate Temperature (°C)", 20, 200, 80)
+T_air = st.sidebar.slider("Air Temperature (°C)", -10, 50, 20)
+sim_time = st.sidebar.slider("Simulation Duration (hours)", 1, 48, 12)
+timestep = 600  # seconds
+n_steps = int((sim_time * 3600) / timestep)
 
-# initialize temperature field
-T = np.ones((ny, nx)) * 20.0  # °C initial guess
+# -----------------------------
+# Cube geometry
+# -----------------------------
+nx, ny, nz = 20, 20, 20
+dx = 1.0 / nx
+alpha = 1e-6  # thermal diffusivity (m²/s), approx for concrete
 
-# -------------------------
-# progress bar + simulation loop
-# -------------------------
+# Initialize temperature field
+T = np.ones((nx, ny, nz)) * T_air
 
-progress = st.progress(0, text="Starting simulation...")
-
-start_time = time.time()
-
+# Precompute all timesteps
+temps = []
 for step in range(n_steps):
-    # --- hydration + heat transfer update ---
-    # (replace this section with your existing update code)
-    T += 0.001 * np.random.randn(*T.shape)  # dummy update, keep your real physics
+    T_new = T.copy()
 
-    # update progress bar
-    if step % max(1, n_steps // 100) == 0:
-        pct = int((step / n_steps) * 100)
-        elapsed = time.time() - start_time
-        if step > 0:
-            est_total = elapsed / (step / n_steps)
-            est_remaining = est_total - elapsed
-        else:
-            est_remaining = 0
+    # finite difference for conduction
+    for i in range(1, nx-1):
+        for j in range(1, ny-1):
+            for k in range(1, nz-1):
+                lap = (
+                    T[i+1,j,k] + T[i-1,j,k] +
+                    T[i,j+1,k] + T[i,j-1,k] +
+                    T[i,j,k+1] + T[i,j,k-1] - 6*T[i,j,k]
+                )
+                T_new[i,j,k] += alpha * timestep / (dx*dx) * lap
 
-        progress.progress(
-            pct,
-            text=f"Running simulation... {pct}% | ~{est_remaining:0.1f}s left"
-        )
+    # Boundary conditions
+    T_new[:,:,0] = T_plate   # bottom face = plate temp
+    T_new[:,:, -1] = T_air   # top = air temp
+    T_new[0,:,:] = T_air     # sides = air temp
+    T_new[-1,:,:] = T_air
+    T_new[:,0,:] = T_air
+    T_new[:,-1,:] = T_air
 
-# finalize
-progress.progress(100, text="Simulation complete ✅")
+    T = T_new
+    if step % max(1, n_steps // 50) == 0:
+        temps.append(T.copy())
 
-# -------------------------
-# visualization (leave your 3D, 2D heatmap, line plot code intact here)
-# -------------------------
+# -----------------------------
+# Time slider
+# -----------------------------
+st.sidebar.header("View")
+frame = st.sidebar.slider("Time step", 0, len(temps)-1, 0)
 
-fig = go.Figure(data=go.Heatmap(
-    z=T,
+# -----------------------------
+# 3D visualization
+# -----------------------------
+T_show = temps[frame]
+
+x, y, z = np.mgrid[0:1:nx*1j, 0:1:ny*1j, 0:1:nz*1j]
+
+fig = go.Figure(data=go.Volume(
+    x=x.flatten(),
+    y=y.flatten(),
+    z=z.flatten(),
+    value=T_show.flatten(),
+    isomin=np.min(T_show),
+    isomax=np.max(T_show),
+    opacity=0.1,
+    surface_count=15,
     colorscale="Jet",
     colorbar=dict(title="°C")
 ))
-st.plotly_chart(fig)
+
+fig.update_layout(
+    scene=dict(
+        xaxis_title="X (m)",
+        yaxis_title="Y (m)",
+        zaxis_title="Z (m)",
+        aspectmode="cube"
+    )
+)
+
+st.plotly_chart(fig, use_container_width=True)
