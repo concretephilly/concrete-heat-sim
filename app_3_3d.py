@@ -3,7 +3,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
-st.title("Hollow-Core Slab Heat Simulation (with Hydration)")
+st.title("Hollow-Core Slab Heat Simulation (Isosurface)")
 
 # -------------------------
 # Sidebar controls
@@ -60,7 +60,7 @@ mask = np.ones((nx, ny, nz), dtype=bool)
 
 # 5 evenly spaced circular cores
 n_cores = 5
-core_radius = 0.25 * height  # default = 25% of height
+core_radius = 0.25 * height
 centers = np.linspace(-width/2+width/(n_cores+1), width/2-width/(n_cores+1), n_cores)
 
 for c in centers:
@@ -100,12 +100,10 @@ def run_sim(alpha_arr, rho_arr, cp_arr, init_temp, outside_temp, h, dt, nt):
             (Tn[1:-1,2:,1:-1] - 2*Tn[1:-1,1:-1,1:-1] + Tn[1:-1,:-2,1:-1])/dy**2 +
             (Tn[1:-1,1:-1,2:] - 2*Tn[1:-1,1:-1,1:-1] + Tn[1:-1,1:-1,:-2])/dz**2
         )
-        # conduction
         T = Tn + alpha_arr*dt*lap
-        # hydration
         q = hydration_rate(step*dt)
         T += (q*dt)/(rho_arr*cp_arr)
-        # convection (all 6 faces)
+        # convection
         T[0,:,:]   -= (h*dt/(rho_arr[0,:,:]*cp_arr[0,:,:]*dx))*(Tn[0,:,:]-outside_temp)
         T[-1,:,:]  -= (h*dt/(rho_arr[-1,:,:]*cp_arr[-1,:,:]*dx))*(Tn[-1,:,:]-outside_temp)
         T[:,0,:]   -= (h*dt/(rho_arr[:,0,:]*cp_arr[:,0,:]*dy))*(Tn[:,0,:]-outside_temp)
@@ -126,13 +124,19 @@ snapshots = run_sim(alpha_arr, rho_arr, cp_arr,
 frame = st.slider("Frame", 0, len(snapshots)-1, 0)
 time_h, Tcurr = snapshots[frame]
 
+# Mask out voids
+Tplot = Tcurr.copy()
+Tplot[~mask] = np.nan
+
 fig = go.Figure(data=go.Isosurface(
-    x=X.flatten(), y=Y.flatten(), z=Z.flatten(),
-    value=np.where(mask, 1, 0).flatten(),
-    isomin=0.5, isomax=1.5,
+    x=X.flatten(),
+    y=Y.flatten(),
+    z=Z.flatten(),
+    value=Tplot.flatten(),
+    isomin=np.nanmin(Tplot),
+    isomax=np.nanmax(Tplot),
     surface=dict(show=True, fill=0.9),
     caps=dict(x_show=False, y_show=False, z_show=False),
-    surfacecolor=Tcurr.flatten(),
     colorscale="Inferno",
     showscale=True,
     colorbar=dict(title="Temperature (°C)")
