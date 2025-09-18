@@ -133,7 +133,7 @@ if view_mode == "2D Cross-section":
         z=data.T,
         x=x_axis,
         y=y_axis,
-        colorscale="Inferno",
+        colorscale="Jet",   # FEA colors
         colorbar=dict(title="Temp (°C)")
     ))
     fig.update_layout(
@@ -158,7 +158,7 @@ else:
             isomax=tmax,
             surface_count=6,
             caps=dict(x_show=False, y_show=False, z_show=False),
-            colorscale="Inferno",
+            colorscale="Jet",   # FEA colors
             showscale=True,
             colorbar=dict(title="Temp (°C)")
         ))
@@ -172,7 +172,7 @@ else:
             isomax=tmax,
             opacity=0.1,
             surface_count=20,
-            colorscale="Inferno",
+            colorscale="Jet",   # FEA colors
             showscale=True,
             colorbar=dict(title="Temp (°C)")
         ))
@@ -211,8 +211,8 @@ avg_temps = [np.mean(T[mask]) for _, T in snapshots]
 max_temps = [np.max(T[mask]) for _, T in snapshots]
 
 fig2 = go.Figure()
-fig2.add_trace(go.Scatter(x=times, y=avg_temps, mode="lines", name="Average Temp"))
-fig2.add_trace(go.Scatter(x=times, y=max_temps, mode="lines", name="Max Temp"))
+fig2.add_trace(go.Scatter(x=times, y=avg_temps, mode="lines", name="Average Temp", line=dict(color="blue")))
+fig2.add_trace(go.Scatter(x=times, y=max_temps, mode="lines", name="Max Temp", line=dict(color="red")))
 
 # Add marker for peak max temp
 peak_idx = int(np.argmax(max_temps))
