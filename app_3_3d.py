@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 from scipy.sparse import diags, identity, kron
 from scipy.sparse.linalg import spsolve
+import time
 
 st.set_page_config(layout="wide")
 st.title("Concrete Heat Simulation (Crank–Nicolson, CEM III defaults)")
@@ -16,6 +17,12 @@ if "frames" not in st.session_state:
     st.session_state.frames = None
 if "times" not in st.session_state:
     st.session_state.times = None
+if "frame_idx" not in st.session_state:
+    st.session_state.frame_idx = 0
+if "view" not in st.session_state:
+    st.session_state.view = "3D Volume (cube)"
+if "playing" not in st.session_state:
+    st.session_state.playing = False
 
 # ----------------------------
 # Parameters
@@ -55,12 +62,10 @@ run_button = st.sidebar.button("(Re)run simulation now")
 # Simulation (Crank–Nicolson)
 # ----------------------------
 def crank_nicolson_heat(nx, ny, nz, dx, dy, dz, dt, nsteps, T_init, T_air, T_bed, ramp_time, alpha):
-    # Grid and initial temperature
     T = np.ones((nx, ny, nz)) * T_init
     frames = [T.copy()]
     times = [0.0]
 
-    # 1D diffusion operators
     rx = alpha * dt / (2 * dx**2)
     ry = alpha * dt / (2 * dy**2)
     rz = alpha * dt / (2 * dz**2)
@@ -91,20 +96,16 @@ def crank_nicolson_heat(nx, ny, nz, dx, dy, dz, dt, nsteps, T_init, T_air, T_bed
       + kron(kron(identity(nx), By), identity(nz)) \
       + kron(kron(identity(nx), identity(ny)), Bz)
 
-    # Time loop
     for step in range(1, nsteps+1):
         t = step * dt
         hours = t / 3600.0
-        # ramp bed temp
         Tbed_now = T_bed * min(hours / ramp_time, 1.0) if ramp_time > 0 else T_bed
 
-        # flatten temperature
         Tflat = T.flatten()
-
         rhs = B @ Tflat
         Tnew = spsolve(A, rhs).reshape((nx, ny, nz))
 
-        # boundary conditions (Dirichlet)
+        # boundary conditions
         Tnew[0, :, :] = T_air
         Tnew[-1, :, :] = T_air
         Tnew[:, 0, :] = T_air
@@ -129,6 +130,7 @@ if run_button:
                                             T_bed, ramp_time, alpha)
         st.session_state.frames = frames
         st.session_state.times = times
+        st.session_state.frame_idx = 0  # reset to start
         st.success("Simulation complete ✅")
 
 # ----------------------------
@@ -138,11 +140,40 @@ if st.session_state.frames is not None:
     frames = st.session_state.frames
     times = st.session_state.times
 
-    view = st.selectbox("View", ["3D Volume (cube)", "2D cross-section", "Temperature vs time"])
-    frame_idx = st.slider("Frame index", 0, len(frames) - 1, 0)
+    # Controls (use session_state to persist)
+    st.session_state.view = st.selectbox(
+        "View",
+        ["3D Volume (cube)", "2D cross-section", "Temperature vs time"],
+        index=["3D Volume (cube)", "2D cross-section", "Temperature vs time"].index(st.session_state.view)
+    )
+
+    # Play / pause buttons
+    col1, col2 = st.columns([1,1])
+    with col1:
+        if st.button("▶ Play"):
+            st.session_state.playing = True
+    with col2:
+        if st.button("⏸ Pause"):
+            st.session_state.playing = False
+
+    # Frame slider
+    st.session_state.frame_idx = st.slider(
+        "Frame index",
+        0, len(frames) - 1,
+        st.session_state.frame_idx
+    )
+
+    # Autoplay if playing
+    if st.session_state.playing:
+        st.session_state.frame_idx = (st.session_state.frame_idx + 1) % len(frames)
+        time.sleep(0.2)
+        st.experimental_rerun()
+
+    frame_idx = st.session_state.frame_idx
     Tframe = frames[frame_idx]
 
-    if view == "3D Volume (cube)":
+    # Views
+    if st.session_state.view == "3D Volume (cube)":
         fig = go.Figure(data=go.Volume(
             x=np.repeat(np.arange(nx), ny * nz),
             y=np.tile(np.repeat(np.arange(ny), nz), nx),
@@ -157,7 +188,7 @@ if st.session_state.frames is not None:
         fig.update_layout(scene=dict(aspectmode="cube"))
         st.plotly_chart(fig, use_container_width=True)
 
-    elif view == "2D cross-section":
+    elif st.session_state.view == "2D cross-section":
         midz = nz // 2
         fig, ax = plt.subplots()
         im = ax.imshow(Tframe[:, :, midz].T, origin="lower", cmap="jet",
@@ -168,7 +199,7 @@ if st.session_state.frames is not None:
         plt.colorbar(im, ax=ax, label="Temperature (°C)")
         st.pyplot(fig)
 
-    elif view == "Temperature vs time":
+    elif st.session_state.view == "Temperature vs time":
         midx, midy, midz = nx//2, ny//2, nz//2
         center_temp = [f[midx, midy, midz] for f in frames]
         fig, ax = plt.subplots()
