@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
-st.title("3D Hollow-Core Slab Heat Transfer Simulation")
+st.title("3D Hollow-Core Slab Heat Transfer + Hydration")
 
 # -------------------------
 # Sidebar controls with tooltips
@@ -39,6 +39,14 @@ k_conc   = st.sidebar.number_input("k concrete (W/mK)", 0.05, 5.0, 1.7,
 h_coeff  = st.sidebar.slider("h convection (W/m²K)", 1, 50, 10,
     help="Convection coefficient between slab surface and air. Higher = faster heat exchange.")
 
+st.sidebar.header("Hydration Heat")
+cement_content = st.sidebar.number_input("Cement content (kg/m³)", 200.0, 600.0, 350.0,
+    help="Cement per cubic meter of concrete.")
+Q_total = st.sidebar.number_input("Total hydration heat (J/kg cement)", 100e3, 600e3, 250e3,
+    help="Total heat released per kg of cement (≈ 250–400 kJ/kg typical).")
+k_rate = st.sidebar.number_input("Reaction rate constant (1/h)", 0.01, 2.0, 0.1,
+    help="Controls how fast the hydration progresses. Larger = faster heat release.")
+
 st.sidebar.header("Hollow Cores")
 n_cores = st.sidebar.slider("Number of cores across width", 0, 6, 3,
     help="Number of circular voids spanning the slab width.")
@@ -46,7 +54,7 @@ core_radius_frac = st.sidebar.slider("Core radius (fraction of height)", 0.05, 0
     help="Core radius as a fraction of slab thickness.")
 
 st.sidebar.header("Time")
-total_hours = st.sidebar.number_input("Total time (hours)", 0.01, 48.0, 2.0,
+total_hours = st.sidebar.number_input("Total time (hours)", 0.01, 72.0, 24.0,
     help="Total simulated duration of heat transfer.")
 dt_user = st.sidebar.number_input("Requested dt (s)", 0.05, 600.0, 5.0,
     help="Solver timestep. Smaller = more accurate but slower.")
@@ -91,6 +99,17 @@ cp_arr  = np.where(mask, cp_conc, cp_air)
 alpha_arr = k_arr/(rho_arr*cp_arr)
 
 # -------------------------
+# Hydration heat function
+# -------------------------
+def hydration_rate(t):
+    """Heat generation rate per m³ of concrete at time t (s)."""
+    t_h = t/3600.0
+    dQdt = Q_total * k_rate * np.exp(-k_rate*t_h)  # J/kg/h
+    dQdt /= 3600.0  # J/kg/s
+    q_vol = cement_content * dQdt  # W/m³
+    return q_vol
+
+# -------------------------
 # Simulation
 # -------------------------
 @st.cache_data(show_spinner=False)
@@ -108,7 +127,12 @@ def run_sim(nx, ny, nz, dx, dy, dz, alpha_arr, rho_arr, cp_arr,
             (Tn[1:-1,2:,1:-1] - 2*Tn[1:-1,1:-1,1:-1] + Tn[1:-1,:-2,1:-1])/dy**2 +
             (Tn[2:,1:-1,1:-1] - 2*Tn[1:-1,1:-1,1:-1] + Tn[:-2,1:-1,1:-1])/dz**2
         )
+        # heat conduction
         T = Tn + alpha_arr*dt*lap
+
+        # hydration heat
+        q = hydration_rate(step*dt)
+        T += (q*dt)/(rho_arr*cp_arr)
 
         # convection boundaries
         T[:,:,0]  -= (h*dt/(rho_arr[:,:,0]*cp_arr[:,:,0]*dx))*(Tn[:,:,0]-outside_temp)
@@ -132,14 +156,12 @@ frame = st.slider("Frame", 0, len(snapshots)-1, 0,
     help="Select a simulation snapshot in time.")
 time_h, Tcurr = snapshots[frame]
 
-X_coords = np.repeat(xs, ny*nz)
-Y_coords = np.tile(np.repeat(ys, nz), nx)
-Z_coords = np.tile(np.tile(zs, ny), nx)
-values   = Tcurr.flatten(order="F")
-
+X_coords, Y_coords, Z_coords = np.meshgrid(xs, ys, zs, indexing="ij")
 fig = go.Figure(data=go.Volume(
-    x=X_coords, y=Y_coords, z=Z_coords,
-    value=values,
+    x=X_coords.flatten(),
+    y=Y_coords.flatten(),
+    z=Z_coords.flatten(),
+    value=Tcurr.flatten(),
     opacity=0.1, surface_count=20,
     colorscale="Inferno",
     caps=dict(x_show=False, y_show=False, z_show=False),
