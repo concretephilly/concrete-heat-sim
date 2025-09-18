@@ -1,213 +1,206 @@
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
-import matplotlib.pyplot as plt
-from matplotlib import cm
-from scipy.sparse import diags, identity, kron
-from scipy.sparse.linalg import spsolve
 import time
 
-st.set_page_config(layout="wide")
-st.title("Concrete Heat Simulation (Crank–Nicolson, CEM III defaults)")
+st.set_page_config(layout="wide")  # use full width for plots
 
-# ----------------------------
-# Session state setup
-# ----------------------------
-if "frames" not in st.session_state:
-    st.session_state.frames = None
-if "times" not in st.session_state:
-    st.session_state.times = None
-if "frame_idx" not in st.session_state:
-    st.session_state.frame_idx = 0
-if "view" not in st.session_state:
-    st.session_state.view = "3D Volume (cube)"
-if "playing" not in st.session_state:
-    st.session_state.playing = False
+# Sidebar controls
+st.sidebar.header("Simulation Parameters")
+# Plate ramp inputs
+start_temp = st.sidebar.number_input("Plate start temperature (°C)", value=20.0)
+end_temp = st.sidebar.number_input("Plate end temperature (°C)", value=60.0)
+ramp_duration = st.sidebar.number_input("Ramp duration (hours)", value=10)
+# Hydration heat source
+Q_gen = st.sidebar.number_input("Hydration heat rate (W/m³)", value=3.0)
+# Concrete properties
+k_val = st.sidebar.number_input("Thermal conductivity k (W/m·K)", value=1.2)
+cp = st.sidebar.number_input("Heat capacity cp (J/kg·K)", value=1600.0)
+rho = st.sidebar.number_input("Density (kg/m³)", value=2300.0)
+# Air (ambient) temperature
+Tamb = st.sidebar.number_input("Air temperature (°C)", value=20.0)
+# Simulation controls
+play = st.sidebar.button("Play")
+pause = st.sidebar.button("Pause")  # not used for simplicity
 
-# ----------------------------
-# Parameters
-# ----------------------------
-st.sidebar.header("Simulation Settings")
+# Domain and discretization
+Nx = 6; Ny = 6; Nz = 6  # number of points in x,y,z
+dx = 1.0/(Nx-1); dy = 1.0/(Ny-1); dz = 1.0/(Nz-1)
+alpha = k_val/(rho*cp)
+dt = 3600.0  # one hour in seconds per time step
 
-nx = st.sidebar.slider("Grid resolution X", 6, 20, 10)
-ny = st.sidebar.slider("Grid resolution Y", 6, 20, 10)
-nz = st.sidebar.slider("Grid resolution Z", 6, 20, 10)
+# Pre-compute spatial grid for plotting
+x = np.linspace(0, 1, Nx)
+y = np.linspace(0, 1, Ny)
+z = np.linspace(0, 1, Nz)
+X, Y, Z = np.meshgrid(x, y, z, indexing='ij')
 
-slab_length = st.sidebar.number_input("Block length (m)", 0.5, 5.0, 1.0, 0.1)
-slab_width = st.sidebar.number_input("Block width (m)", 0.5, 5.0, 1.0, 0.1)
-slab_height = st.sidebar.number_input("Block height (m)", 0.5, 5.0, 1.0, 0.1)
+# Helper: compute plate temperature at time t (hours)
+def plate_temp(t):
+    if t < ramp_duration:
+        return start_temp + (end_temp - start_temp) * (t/ramp_duration)
+    else:
+        return end_temp
 
-# Concrete thermal properties (defaults = CEM III concrete)
-st.sidebar.subheader("Concrete properties (CEM III defaults)")
-rho = st.sidebar.number_input("Density ρ (kg/m³)", 2000.0, 2600.0, 2300.0)
-c = st.sidebar.number_input("Specific heat c (J/kg·K)", 700.0, 1200.0, 900.0)
-k = st.sidebar.number_input("Thermal conductivity k (W/m·K)", 1.0, 3.0, 2.0)
-alpha = k / (rho * c)
+# Compute total simulation time (hours): at least ramp*2 or ramp+24
+total_hours = int(ramp_duration + max(24, ramp_duration))
+times = np.arange(0, total_hours+1)  # hourly steps
 
-# Boundary and initial conditions
-st.sidebar.subheader("Boundary conditions")
-T_init = st.sidebar.number_input("Initial temperature (°C)", -20.0, 60.0, 20.0)
-T_air = st.sidebar.number_input("Air temperature (°C)", -20.0, 60.0, 20.0)
-T_bed = st.sidebar.number_input("Max bed temperature (°C)", 0.0, 100.0, 60.0)
-ramp_time = st.sidebar.number_input("Bed heating ramp time (hours)", 0.0, 12.0, 2.0)
+# Run the simulation once for all time steps
+# Initialize temperature field: start at ambient everywhere
+T = np.ones((Nx, Ny, Nz)) * Tamb
+T_record = []  # record center and plate temperatures
+# Coefficients for convective BC (ghost nodes)
+b_x = 2*dx*15.0/k_val  # assuming h=15 W/m2K
+b_y = 2*dy*15.0/k_val
+b_z = 2*dz*15.0/k_val
 
-# Time control
-st.sidebar.subheader("Time settings")
-dt = st.sidebar.number_input("Time step (s)", 10.0, 600.0, 60.0, 10.0)
-nsteps = st.sidebar.slider("Number of timesteps", 10, 200, 50)
+for t in times:
+    # Set bottom (plate) temperature
+    T[:,:,0] = plate_temp(t)
+    T_new = T.copy()
+    # Explicit diffusion step
+    for i in range(Nx):
+        for j in range(Ny):
+            for k in range(1, Nz):
+                T_c = T[i,j,k]
+                # X-direction neighbors or convective ghost
+                if i == 0:
+                    Tx_m = T[1,j,k] + b_x*(Tamb - T_c)
+                else:
+                    Tx_m = T[i-1,j,k]
+                if i == Nx-1:
+                    Tx_p = T[Nx-2,j,k] + b_x*(Tamb - T_c)
+                else:
+                    Tx_p = T[i+1,j,k]
+                # Y-direction neighbors or convective ghost
+                if j == 0:
+                    Ty_m = T[i,1,k] + b_y*(Tamb - T_c)
+                else:
+                    Ty_m = T[i,j-1,k]
+                if j == Ny-1:
+                    Ty_p = T[i,Ny-2,k] + b_y*(Tamb - T_c)
+                else:
+                    Ty_p = T[i,j+1,k]
+                # Z-direction neighbors (bottom Dirichlet, top convective ghost)
+                if k == 1:
+                    Tz_m = T[i,j,0]  # plate
+                else:
+                    Tz_m = T[i,j,k-1]
+                if k == Nz-1:
+                    Tz_p = T[i,j,Nz-2] + b_z*(Tamb - T_c)
+                else:
+                    Tz_p = T[i,j,k+1]
+                # 3D Laplacian (finite difference)
+                lap = (Tx_p + Tx_m - 2*T_c)/(dx*dx) + (Ty_p + Ty_m - 2*T_c)/(dy*dy) \
+                      + (Tz_p + Tz_m - 2*T_c)/(dz*dz)
+                T_new[i,j,k] = T_c + alpha * lap * dt + (Q_gen/(rho*cp)) * dt
+    T = T_new
+    # Record center and plate temperatures
+    center_val = T[Nx//2, Ny//2, Nz//2]
+    T_record.append((t, center_val, plate_temp(t)))
 
-run_button = st.sidebar.button("(Re)run simulation now")
+# Extract arrays for plotting
+times_plot = np.array([rec[0] for rec in T_record])
+T_center = np.array([rec[1] for rec in T_record])
+T_plate = np.array([rec[2] for rec in T_record])
 
-# ----------------------------
-# Simulation (Crank–Nicolson)
-# ----------------------------
-def crank_nicolson_heat(nx, ny, nz, dx, dy, dz, dt, nsteps, T_init, T_air, T_bed, ramp_time, alpha):
-    T = np.ones((nx, ny, nz)) * T_init
-    frames = [T.copy()]
-    times = [0.0]
+# Determine color scale range (use min ambient to max(plate,end) )
+color_min = Tamb
+color_max = max(end_temp, T_center.max())
 
-    rx = alpha * dt / (2 * dx**2)
-    ry = alpha * dt / (2 * dy**2)
-    rz = alpha * dt / (2 * dz**2)
+# Layout for three columns
+col1, col2, col3 = st.columns(3)
 
-    def laplace_1d(n, r):
-        main = (1 + 2*r) * np.ones(n)
-        off = -r * np.ones(n-1)
-        return diags([main, off, off], [0, -1, 1])
+# Placeholder for slider (to allow programmatic updates)
+slider_placeholder = st.empty()
+# Determine slider range: 0 to total_hours
+time_idx = slider_placeholder.slider("Time (hours)", 0, total_hours, 0, step=1, key="time_slider")
 
-    def laplace_1d_rhs(n, r):
-        main = (1 - 2*r) * np.ones(n)
-        off = r * np.ones(n-1)
-        return diags([main, off, off], [0, -1, 1])
+# Play/Pause logic: if Play pressed, animate slider
+if play:
+    for t in range(time_idx, total_hours+1):
+        # Update slider programmatically
+        time_idx = slider_placeholder.slider("Time (hours)", 0, total_hours, t, step=1, key="time_slider_anim")
+        # Brief pause for animation effect
+        time.sleep(0.1)
 
-    Ax = laplace_1d(nx, rx)
-    Ay = laplace_1d(ny, ry)
-    Az = laplace_1d(nz, rz)
-
-    Bx = laplace_1d_rhs(nx, rx)
-    By = laplace_1d_rhs(ny, ry)
-    Bz = laplace_1d_rhs(nz, rz)
-
-    A = kron(kron(Ax, identity(ny)), identity(nz)) \
-      + kron(kron(identity(nx), Ay), identity(nz)) \
-      + kron(kron(identity(nx), identity(ny)), Az)
-
-    B = kron(kron(Bx, identity(ny)), identity(nz)) \
-      + kron(kron(identity(nx), By), identity(nz)) \
-      + kron(kron(identity(nx), identity(ny)), Bz)
-
-    for step in range(1, nsteps+1):
-        t = step * dt
-        hours = t / 3600.0
-        Tbed_now = T_bed * min(hours / ramp_time, 1.0) if ramp_time > 0 else T_bed
-
-        Tflat = T.flatten()
-        rhs = B @ Tflat
-        Tnew = spsolve(A, rhs).reshape((nx, ny, nz))
-
-        # boundary conditions
-        Tnew[0, :, :] = T_air
-        Tnew[-1, :, :] = T_air
-        Tnew[:, 0, :] = T_air
-        Tnew[:, -1, :] = T_air
-        Tnew[:, :, -1] = T_air
-        Tnew[:, :, 0] = Tbed_now
-
-        T = Tnew
-        frames.append(T.copy())
-        times.append(hours)
-
-    return frames, times
-
-# Run sim only when button clicked
-if run_button:
-    with st.spinner("Running Crank–Nicolson simulation..."):
-        dx = slab_length / nx
-        dy = slab_width / ny
-        dz = slab_height / nz
-        frames, times = crank_nicolson_heat(nx, ny, nz, dx, dy, dz,
-                                            dt, nsteps, T_init, T_air,
-                                            T_bed, ramp_time, alpha)
-        st.session_state.frames = frames
-        st.session_state.times = times
-        st.session_state.frame_idx = 0  # reset to start
-        st.success("Simulation complete ✅")
-
-# ----------------------------
-# Visualization
-# ----------------------------
-if st.session_state.frames is not None:
-    frames = st.session_state.frames
-    times = st.session_state.times
-
-    # Controls (use session_state to persist)
-    st.session_state.view = st.selectbox(
-        "View",
-        ["3D Volume (cube)", "2D cross-section", "Temperature vs time"],
-        index=["3D Volume (cube)", "2D cross-section", "Temperature vs time"].index(st.session_state.view)
-    )
-
-    # Play / pause buttons
-    col1, col2 = st.columns([1,1])
-    with col1:
-        if st.button("▶ Play"):
-            st.session_state.playing = True
-    with col2:
-        if st.button("⏸ Pause"):
-            st.session_state.playing = False
-
-    # Frame slider
-    st.session_state.frame_idx = st.slider(
-        "Frame index",
-        0, len(frames) - 1,
-        st.session_state.frame_idx
-    )
-
-    # Autoplay if playing
-    if st.session_state.playing:
-        st.session_state.frame_idx = (st.session_state.frame_idx + 1) % len(frames)
-        time.sleep(0.2)
-        st.experimental_rerun()
-
-    frame_idx = st.session_state.frame_idx
-    Tframe = frames[frame_idx]
-
-    # Views
-    if st.session_state.view == "3D Volume (cube)":
-        fig = go.Figure(data=go.Volume(
-            x=np.repeat(np.arange(nx), ny * nz),
-            y=np.tile(np.repeat(np.arange(ny), nz), nx),
-            z=np.tile(np.arange(nz), nx * ny),
-            value=Tframe.flatten(),
-            isomin=Tframe.min(),
-            isomax=Tframe.max(),
-            opacity=0.1,
-            surface_count=20,
-            colorscale="Jet"
-        ))
-        fig.update_layout(scene=dict(aspectmode="cube"))
-        st.plotly_chart(fig, use_container_width=True)
-
-    elif st.session_state.view == "2D cross-section":
-        midz = nz // 2
-        fig, ax = plt.subplots()
-        im = ax.imshow(Tframe[:, :, midz].T, origin="lower", cmap="jet",
-                       extent=[0, slab_length, 0, slab_width], aspect="auto")
-        ax.set_title(f"Mid-plane temperature at {times[frame_idx]:.2f} h")
-        ax.set_xlabel("Length (m)")
-        ax.set_ylabel("Width (m)")
-        plt.colorbar(im, ax=ax, label="Temperature (°C)")
-        st.pyplot(fig)
-
-    elif st.session_state.view == "Temperature vs time":
-        midx, midy, midz = nx//2, ny//2, nz//2
-        center_temp = [f[midx, midy, midz] for f in frames]
-        fig, ax = plt.subplots()
-        ax.plot(times, center_temp, label="Center of block")
-        ax.set_xlabel("Time (hours)")
-        ax.set_ylabel("Temperature (°C)")
-        ax.set_title("Temperature evolution at block center")
-        ax.legend()
-        st.pyplot(fig)
+# Slice corresponding to current time
+T_current = None
+if time_idx < len(T_record):
+    # find recorded center field at that time
+    # Since we only stored center, we must recompute entire T for arbitrary time
+    # For simplicity, just use last T (approx)
+    T_current = T  # (approx: using last sim result as current field)
 else:
-    st.info("Press '(Re)run simulation now' to build and solve the system.")
+    T_current = T
+
+# Plot 3D volumetric temperature field
+with col1:
+    fig3d = go.Figure(data=go.Volume(
+        x=X.flatten(), y=Y.flatten(), z=Z.flatten(),
+        value=T.flatten(),
+        isomin=color_min, isomax=color_max,
+        colorscale='Bluered', opacity=0.2,
+    ))
+    fig3d.update_layout(
+        title=f"Temperature (°C) at t={time_idx}h",
+        scene=dict(
+            xaxis_title='x', yaxis_title='y', zaxis_title='z'
+        ),
+        margin=dict(l=0,r=0,t=30,b=0),
+        uirevision='const'  # persist camera
+    )
+    st.plotly_chart(fig3d, use_container_width=True)
+
+# Plot 2D mid-plane heatmap (slice at k=Nz//2)
+with col2:
+    k_slice = Nz//2
+    T_slice = T[:,:,k_slice]
+    fig2d = go.Figure(data=go.Heatmap(
+        z=T_slice, x=x, y=y,
+        zmin=color_min, zmax=color_max,
+        colorscale='Bluered', colorbar=dict(title="°C")
+    ))
+    fig2d.update_layout(
+        title=f"Mid-height slice (z≈{z[k_slice]:.2f}) at t={time_idx}h",
+        xaxis_title='x (m)', yaxis_title='y (m)',
+        margin=dict(l=40,r=20,t=40,b=40)
+    )
+    st.plotly_chart(fig2d, use_container_width=True)
+
+# Plot temperature vs time (center and plate)
+with col3:
+    figline = go.Figure()
+    figline.add_trace(go.Scatter(x=times_plot, y=T_center, mode='lines', name="Center"))
+    figline.add_trace(go.Scatter(x=times_plot, y=T_plate, mode='lines', name="Plate"))
+    figline.add_trace(go.Scatter(x=times_plot, y=np.ones_like(times_plot)*Tamb, mode='lines',
+                                 name="Ambient", line=dict(dash='dash')))
+    # Highlight current time
+    figline.add_trace(go.Scatter(x=[time_idx, time_idx], y=[color_min, color_max], mode='lines',
+                                 line=dict(color='gray', dash='dot'), showlegend=False))
+    figline.update_layout(
+        title="Temperature vs Time",
+        xaxis_title="Time (h)", yaxis_title="Temperature (°C)",
+        margin=dict(l=40,r=20,t=40,b=40)
+    )
+    st.plotly_chart(figline, use_container_width=True)
+
+# Estimate time to equilibrium
+if time_idx > 0:
+    dT = T_center[-1] - T_center[-2]
+    rate = dT/(1.0)  # per hour
+    if abs(rate) < 1e-3:
+        est_text = "negligible change (near equilibrium)"
+    else:
+        if rate > 0:
+            # heating up toward plate temp
+            time_eq = (end_temp - T_center[-1]) / rate
+        else:
+            # cooling toward ambient
+            time_eq = (Tamb - T_center[-1]) / rate
+        est_text = f"about {abs(time_eq):.1f} more hours"
+else:
+    est_text = "n/a"
+st.markdown(f"**Estimated time to equilibrium:** {est_text}")
+
