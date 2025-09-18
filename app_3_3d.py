@@ -2,159 +2,209 @@ import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
 
-st.set_page_config(layout="wide")
+# -------------------------
+# Heat transfer simulation
+# -------------------------
 
-st.title("Concrete Hollow-Core Slab Heat Simulation (CEM III Defaults + Convection)")
+def simulate_heat(length, width, height, nx, ny, nz, outside_temp, heat_rate, total_time, dt, k, rho, c, n_voids):
+    dx = length / nx
+    dy = width / ny
+    dz = height / nz
 
-# ------------------------
-# Default material properties (CEM III)
-# ------------------------
-default_density = 2300.0        # kg/m3
-default_cp = 900.0              # J/kgK
-default_k = 2.5                 # W/mK
-default_hydration = 250e3       # J/kg cement (simplified scaling)
-default_outside_temp = 20.0     # °C
-default_h = 10.0                # W/m²K, natural convection
+    # Coordinates
+    x = np.linspace(0, length, nx)
+    y = np.linspace(0, width, ny)
+    z = np.linspace(0, height, nz)
+    X, Y, Z = np.meshgrid(x, y, z, indexing="ij")
 
-# ------------------------
+    # Initialize temperature field
+    T = np.ones((nx, ny, nz)) * outside_temp
+
+    # Mask for concrete vs voids (hollow-cores)
+    mask = np.ones_like(T, dtype=bool)
+
+    void_radius = min(width / (2 * n_voids), height / 3)
+    void_centers_y = np.linspace(width/(2*n_voids), width-width/(2*n_voids), n_voids)
+
+    for cy in void_centers_y:
+        r = np.sqrt((Y - cy)**2 + (Z - height/2)**2)
+        mask[r < void_radius] = False
+
+    alpha = k / (rho * c)  # thermal diffusivity
+    n_steps = int(total_time / dt)
+    snapshots = []
+
+    for step in range(n_steps):
+        # Finite difference Laplacian
+        Tnew = T.copy()
+        Tnew[1:-1,1:-1,1:-1] = T[1:-1,1:-1,1:-1] + alpha * dt * (
+            (T[2:,1:-1,1:-1] - 2*T[1:-1,1:-1,1:-1] + T[:-2,1:-1,1:-1]) / dx**2 +
+            (T[1:-1,2:,1:-1] - 2*T[1:-1,1:-1,1:-1] + T[1:-1,:-2,1:-1]) / dy**2 +
+            (T[1:-1,1:-1,2:] - 2*T[1:-1,1:-1,1:-1] + T[1:-1,1:-1,:-2]) / dz**2
+        )
+
+        # Apply hydration heat in concrete regions
+        Tnew[mask] += (heat_rate / (rho * c)) * dt
+
+        # Boundary = outside temperature
+        Tnew[0,:,:] = outside_temp
+        Tnew[-1,:,:] = outside_temp
+        Tnew[:,0,:] = outside_temp
+        Tnew[:,-1,:] = outside_temp
+        Tnew[:,:,0] = outside_temp
+        Tnew[:,:,-1] = outside_temp
+
+        T = Tnew
+        time_h = step * dt / 3600
+        if step % max(1, n_steps // 50) == 0:
+            snapshots.append((time_h, T.copy()))
+
+    return X, Y, Z, snapshots, mask
+
+
+# -------------------------
+# Streamlit App
+# -------------------------
+
+st.title("Concrete Hollow-core Slab Heat Simulation")
+
 # Sidebar settings
-# ------------------------
-st.sidebar.header("Material & Environmental Settings")
-density = st.sidebar.number_input("Density (kg/m³)", 1500.0, 3000.0, default_density)
-cp = st.sidebar.number_input("Specific heat (J/kgK)", 500.0, 1500.0, default_cp)
-k = st.sidebar.number_input("Thermal conductivity (W/mK)", 0.5, 5.0, default_k)
-hydration_heat = st.sidebar.number_input("Hydration heat (J/kg cement)", 1e4, 5e5, default_hydration)
-outside_temp = st.sidebar.number_input("Outside air temperature (°C)", -20.0, 40.0, default_outside_temp)
-h_conv = st.sidebar.number_input("Convection coefficient h (W/m²K)", 2.0, 100.0, default_h)
-
-st.sidebar.header("Geometry")
-length = st.sidebar.number_input("Slab length (m)", 1.0, 20.0, 4.0)
-width = st.sidebar.number_input("Slab width (m)", 0.5, 5.0, 1.2)
-height = st.sidebar.number_input("Slab height (m)", 0.1, 1.0, 0.2)
-n_voids = st.sidebar.number_input("Number of hollow cores", 1, 10, 5)
-void_radius = st.sidebar.number_input("Hollow core radius (m)", 0.05, 0.2, 0.08)
-
 st.sidebar.header("Simulation Settings")
-nx = st.sidebar.slider("Grid resolution lengthwise", 20, 200, 120)
-ny = st.sidebar.slider("Grid resolution widthwise", 10, 100, 60)
-nz = st.sidebar.slider("Grid resolution heightwise", 5, 50, 20)
-dt = 60.0   # timestep (s)
-tmax = st.sidebar.number_input("Simulation duration (hours)", 1, 200, 72)
 
-# ------------------------
-# Grid setup
-# ------------------------
-dx = length / nx
-dy = width / ny
-dz = height / nz
-alpha = k / (density * cp)
+# Geometry
+length = st.sidebar.number_input("Slab length (m)", 1.0, 20.0, 4.0, help="Total length of the hollow-core slab")
+width = st.sidebar.number_input("Slab width (m)", 0.5, 5.0, 1.2, help="Total width of the hollow-core slab")
+height = st.sidebar.number_input("Slab height (m)", 0.1, 1.0, 0.3, help="Total height (thickness) of the hollow-core slab")
+n_voids = st.sidebar.slider("Number of hollow cores", 1, 10, 5, help="How many circular voids to include across the width")
 
-x = np.linspace(0, length, nx)
-y = np.linspace(0, width, ny)
-z = np.linspace(0, height, nz)
-X, Y, Z = np.meshgrid(x, y, z, indexing="ij")
+# Material properties
+outside_temp = st.sidebar.number_input("Outside temperature (°C)", -20.0, 40.0, 5.0)
+heat_rate = st.sidebar.number_input("Heat generation rate (W/m³)", 0.0, 200000.0, 50000.0,
+                                    help="Approximate heat released by hydration per unit volume")
+rho = st.sidebar.number_input("Density (kg/m³)", 1000.0, 4000.0, 2400.0)
+c = st.sidebar.number_input("Specific heat capacity (J/kgK)", 500.0, 2000.0, 900.0)
+k = st.sidebar.number_input("Thermal conductivity (W/mK)", 0.1, 5.0, 1.4)
 
-# mask: True = concrete, False = void
-mask = np.ones((nx, ny, nz), dtype=bool)
-spacing = width / (n_voids + 1)
-cy = np.linspace(spacing, width - spacing, n_voids)
-cz = np.full_like(cy, height / 2)
+# Time settings
+total_time = st.sidebar.slider("Simulation time (hours)", 1, 72, 24) * 3600
+dt = 60  # timestep in seconds
 
-for i in range(nx):
-    for j in range(ny):
-        for k_ in range(nz):
-            for c_y, c_z in zip(cy, cz):
-                if (Y[i, j, k_] - c_y) ** 2 + (Z[i, j, k_] - c_z) ** 2 < void_radius**2:
-                    mask[i, j, k_] = False
+# Mesh resolution
+nx, ny, nz = 30, 20, 10
 
-# ------------------------
-# Simulation
-# ------------------------
-T = np.ones((nx, ny, nz)) * (outside_temp + 10.0)  # slightly warmer initial slab
-snapshots = [(0.0, T.copy())]
+# Run simulation
+with st.spinner("Simulating heat transfer..."):
+    X, Y, Z, snapshots, mask = simulate_heat(
+        length, width, height, nx, ny, nz,
+        outside_temp, heat_rate, total_time, dt,
+        k, rho, c, n_voids
+    )
 
-nsteps = int((tmax * 3600) / dt)
-save_interval = max(1, nsteps // 50)
+# -------------------------
+# Visualization
+# -------------------------
 
-for step in range(nsteps):
-    Tnew = T.copy()
-    for i in range(nx):
-        for j in range(ny):
-            for k_ in range(nz):
-                if mask[i, j, k_]:
-                    # internal conduction
-                    if 0 < i < nx-1 and 0 < j < ny-1 and 0 < k_ < nz-1:
-                        lap = (T[i+1, j, k_] + T[i-1, j, k_] +
-                               T[i, j+1, k_] + T[i, j-1, k_] +
-                               T[i, j, k_+1] + T[i, j, k_-1] - 6*T[i, j, k_]) / dx**2
-                    else:
-                        lap = 0.0
-                    source = (hydration_heat / (density*cp)) * np.exp(-step*dt/3600/10.0)
-                    dT = alpha * dt * lap + source * dt
-                    Tnew[i, j, k_] = T[i, j, k_] + dT
+st.subheader("Temperature Visualization")
 
-                    # surface convection cooling (outer faces only)
-                    if i == 0 or i == nx-1:
-                        Tnew[i, j, k_] += - (h_conv/(density*cp)) * (2/dx) * (T[i, j, k_] - outside_temp) * dt
-                    if j == 0 or j == ny-1:
-                        Tnew[i, j, k_] += - (h_conv/(density*cp)) * (2/dy) * (T[i, j, k_] - outside_temp) * dt
-                    if k_ == 0 or k_ == nz-1:
-                        Tnew[i, j, k_] += - (h_conv/(density*cp)) * (2/dz) * (T[i, j, k_] - outside_temp) * dt
+# Compute global min/max across all snapshots (concrete only)
+valid_mins, valid_maxs = [], []
+for _, Tsnap in snapshots:
+    vals = Tsnap[mask]
+    if vals.size > 0:
+        valid_mins.append(np.min(vals))
+        valid_maxs.append(np.max(vals))
+global_min = float(np.min(valid_mins)) if valid_mins else outside_temp
+global_max = float(np.max(valid_maxs)) if valid_maxs else outside_temp + 1.0
+if np.isclose(global_min, global_max):
+    global_max = global_min + 1.0
 
-                else:
-                    # Hollow cores exchange with outside air only
-                    Tnew[i, j, k_] = outside_temp + 0.05*(np.mean([
-                        T[min(nx-1,i+1),j,k_],T[max(0,i-1),j,k_],
-                        T[i,min(ny-1,j+1),k_],T[i,max(0,j-1),k_],
-                        T[i,j,min(nz-1,k_+1)],T[i,j,max(0,k_-1)]
-                    ]) - outside_temp)
-    T = Tnew
-    if step % save_interval == 0:
-        snapshots.append((step*dt/3600, T.copy()))
-
-# ------------------------
-# Cross-sectional visualization
-# ------------------------
-st.subheader("Cross-sectional Temperature Field")
-
+# Frame slider
 frame = st.slider("Time step (index)", 0, len(snapshots)-1, 0)
 time_h, Tcurr = snapshots[frame]
 
-axis = st.radio("Slice Axis", ["X", "Y", "Z"], horizontal=True)
-if axis == "X":
-    slice_idx = nx // 2
-    data = Tcurr[slice_idx, :, :]
-    xlabel, ylabel = "Width (m)", "Height (m)"
-    x_axis, y_axis = y, z
-elif axis == "Y":
-    slice_idx = ny // 2
-    data = Tcurr[:, slice_idx, :]
-    xlabel, ylabel = "Length (m)", "Height (m)"
-    x_axis, y_axis = x, z
-else:
-    slice_idx = nz // 2
-    data = Tcurr[:, :, slice_idx]
-    xlabel, ylabel = "Length (m)", "Width (m)"
-    x_axis, y_axis = x, y
+# Prepare plot values
+Tplot = Tcurr.copy()
+dummy_below = global_min - (global_max - global_min) * 0.5 - 1.0
+Tplot[~mask] = dummy_below
 
-fig = go.Figure(data=go.Heatmap(
-    z=data.T,
-    x=x_axis,
-    y=y_axis,
-    colorscale="Jet",
-    colorbar=dict(title="Temp (°C)")
-))
-fig.update_layout(
-    title=f"Cross-section at t = {time_h:.2f} h",
-    xaxis_title=xlabel,
-    yaxis_title=ylabel,
-    yaxis=dict(scaleanchor="x", scaleratio=1)
-)
+view_mode = st.radio("View Mode", ["3D Isosurface", "3D Volume", "2D Cross-section"], horizontal=True)
+
+if view_mode == "2D Cross-section":
+    axis = st.radio("Slice Axis", ["X", "Y", "Z"], horizontal=True)
+    if axis == "X":
+        slice_idx = X.shape[0] // 2
+        data = Tcurr[slice_idx, :, :]
+        x_axis, y_axis = np.linspace(0, width, Y.shape[1]), np.linspace(0, height, Z.shape[2])
+        xlabel, ylabel = "Width (m)", "Height (m)"
+    elif axis == "Y":
+        slice_idx = Y.shape[1] // 2
+        data = Tcurr[:, slice_idx, :]
+        x_axis, y_axis = np.linspace(0, length, X.shape[0]), np.linspace(0, height, Z.shape[2])
+        xlabel, ylabel = "Length (m)", "Height (m)"
+    else:  # Z
+        slice_idx = Z.shape[2] // 2
+        data = Tcurr[:, :, slice_idx]
+        x_axis, y_axis = np.linspace(0, length, X.shape[0]), np.linspace(0, width, Y.shape[1])
+        xlabel, ylabel = "Length (m)", "Width (m)"
+
+    fig = go.Figure(data=go.Heatmap(
+        z=data.T,
+        x=x_axis,
+        y=y_axis,
+        colorscale="Jet",
+        zmin=global_min,
+        zmax=global_max,
+        colorbar=dict(title="Temp (°C)")
+    ))
+    fig.update_layout(
+        title=f"Cross-section at t = {time_h:.2f} h",
+        xaxis_title=xlabel,
+        yaxis_title=ylabel,
+        yaxis=dict(scaleanchor="x", scaleratio=1)
+    )
+
+else:
+    xf, yf, zf, vf = X.flatten(), Y.flatten(), Z.flatten(), Tplot.flatten()
+    if view_mode == "3D Isosurface":
+        fig = go.Figure(data=go.Isosurface(
+            x=xf, y=yf, z=zf, value=vf,
+            isomin=global_min, isomax=global_max,
+            surface_count=8,
+            caps=dict(x_show=False, y_show=False, z_show=False),
+            colorscale="Jet",
+            showscale=True,
+            colorbar=dict(title="Temp (°C)")
+        ))
+    else:  # Volume
+        fig = go.Figure(data=go.Volume(
+            x=xf, y=yf, z=zf, value=vf,
+            isomin=global_min, isomax=global_max,
+            opacity=0.1,
+            surface_count=20,
+            colorscale="Jet",
+            showscale=True,
+            colorbar=dict(title="Temp (°C)")
+        ))
+
+    camera = dict(up=dict(x=0, y=0, z=1),
+                  center=dict(x=0, y=0, z=0),
+                  eye=dict(x=2, y=2, z=1.5))
+    fig.update_layout(
+        title=f"t = {time_h:.2f} h",
+        scene_aspectmode="manual",
+        scene_aspectratio=dict(x=length, y=width, z=height),
+        scene=dict(xaxis_title="Length (m)", yaxis_title="Width (m)", zaxis_title="Height (m)"),
+        height=750,
+        uirevision="keep_camera",
+        scene_camera=camera,
+        dragmode="orbit"
+    )
+
 st.plotly_chart(fig, use_container_width=True)
 
-# ------------------------
-# Temperature history plot
-# ------------------------
+# -------------------------
+# Temperature history + Equalization
+# -------------------------
 st.subheader("Temperature Evolution")
 
 times = [t for t, _ in snapshots]
@@ -176,15 +226,17 @@ for t, avg in zip(times, avg_temps):
 if eq_time is not None:
     fig2.add_vline(x=eq_time, line=dict(color="green", dash="dash"))
     fig2.add_trace(go.Scatter(
-        x=[eq_time], y=[outside_temp],
-        mode="markers+text",
-        text=["Equalized"], textposition="top right",
-        marker=dict(color="green", size=10, symbol="x"),
-        name="Equalization Point"
+        x=[eq_time], y=[np.interp(eq_time, times, max_temps)],
+        mode="markers+text", text=["Equalized"], textposition="top right",
+        marker=dict(color="green", size=10, symbol="x"), name="Equalization Point"
     ))
 
-fig2.update_layout(xaxis_title="Time (hours)", yaxis_title="Temperature (°C)",
-                   title="Concrete Temperature vs Time", height=400)
+fig2.update_layout(
+    xaxis_title="Time (hours)",
+    yaxis_title="Temperature (°C)",
+    title="Concrete Temperature vs Time",
+    height=400
+)
 st.plotly_chart(fig2, use_container_width=True)
 
 st.subheader("Equalization Estimate")
