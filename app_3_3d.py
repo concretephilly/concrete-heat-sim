@@ -63,14 +63,110 @@ st.sidebar.markdown("⚡ **Tip:** Lower resolution & larger timestep = much fast
 # Run button
 # -------------------------
 if st.button("Run Simulation"):
-    # ---- import solver code from previous version ----
-    # (To keep answer shorter, reuse the full solver I gave in last message,
-    # but keep nx,ny,nz and dt_seconds from here.)
-    # Just paste that solver section here, unchanged, starting with
-    # "dx = length / nx" and ending at "st.download_button..."
     st.info("⏳ Running simulation... please wait. This may take some seconds depending on settings.")
 
-    # (--- solver code block from last message goes here ---)
+    # Mesh spacing
+    dx = length / nx
+    dy = width / ny
+
+    # Time steps
+    n_steps = int(sim_hours * 3600 / dt_seconds)
+
+    # Initialize temperature field
+    T = np.full((nx, ny), outside_temp, dtype=np.float64)
+
+    # Hydration progress
+    alpha = np.zeros((nx, ny), dtype=np.float64)
+
+    # Void mask (True where air voids exist)
+    xv = np.linspace(0, length, nx)
+    yv = np.linspace(0, width, ny)
+    X, Y = np.meshgrid(xv, yv, indexing="ij")
+    void_mask = np.zeros_like(T, dtype=bool)
+
+    void_spacing = width / (n_voids + 1)
+    for i in range(n_voids):
+        cy = (i + 1) * void_spacing
+        void_mask |= ( (Y - cy) ** 2 + (X - length/2) ** 2 ) < void_radius ** 2
+
+    # Progress bar
+    progress = st.progress(0, text="Starting simulation...")
+
+    # Store average temperature history
+    avg_temps = []
+
+    # Time loop
+    for step in range(n_steps):
+        # Hydration (Arrhenius-type model)
+        d_alpha = k_rate_h * (1 - alpha) * (dt_seconds / 3600.0)
+        alpha += d_alpha
+        alpha = np.clip(alpha, 0.0, 1.0)
+
+        q_hyd = cement_content * Q_total * d_alpha / (density * cp)
+
+        # Diffusion (finite differences, simplified 2D)
+        T_pad = np.pad(T, 1, mode="edge")
+        lap = (
+            T_pad[2:,1:-1] + T_pad[:-2,1:-1] +
+            T_pad[1:-1,2:] + T_pad[1:-1,:-2] -
+            4 * T_pad[1:-1,1:-1]
+        ) / (dx * dy)
+
+        dT_diff = k_conc / (density * cp) * lap * dt_seconds
+
+        # Convection on surfaces (approximate)
+        surface_loss = np.zeros_like(T)
+        surface_loss[0,:] += h_conv * (outside_temp - T[0,:]) * dt_seconds / (density * cp * dx)
+        surface_loss[-1,:] += h_conv * (outside_temp - T[-1,:]) * dt_seconds / (density * cp * dx)
+        surface_loss[:,0] += h_conv * (outside_temp - T[:,0]) * dt_seconds / (density * cp * dy)
+        surface_loss[:,-1] += h_conv * (outside_temp - T[:,-1]) * dt_seconds / (density * cp * dy)
+
+        # Update T
+        T += dT_diff + q_hyd + surface_loss
+
+        # Void cells stay at outside air temperature
+        T[void_mask] = outside_temp
+
+        # Save average temp
+        avg_temps.append(np.mean(T[~void_mask]))
+
+        # Update progress bar
+        if step % max(1, n_steps // 100) == 0:
+            pct = int((step / n_steps) * 100)
+            progress.progress(pct, text=f"Running simulation... {pct}%")
+
+    progress.progress(100, text="Simulation complete ✅")
+
+    # -------------------------
+    # Plot cross-section
+    # -------------------------
+    fig = go.Figure(data=go.Heatmap(
+        z=T.T,
+        x=xv,
+        y=yv,
+        colorscale="Jet",
+        colorbar=dict(title="°C")
+    ))
+    fig.update_layout(
+        title="Final temperature distribution (cross-section)",
+        xaxis_title="Length (m)",
+        yaxis_title="Width (m)",
+        yaxis=dict(scaleanchor="x", scaleratio=1)
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # -------------------------
+    # Plot avg temp vs time
+    # -------------------------
+    times = np.arange(n_steps) * dt_seconds / 3600
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(x=times, y=avg_temps, mode="lines", name="Avg Temp"))
+    fig2.update_layout(
+        title="Average temperature over time",
+        xaxis_title="Time (hours)",
+        yaxis_title="Temperature (°C)"
+    )
+    st.plotly_chart(fig2, use_container_width=True)
 
 else:
     st.warning("Click **Run Simulation** to start. Adjust parameters in the sidebar first.")
