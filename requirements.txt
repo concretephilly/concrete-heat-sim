@@ -4,4 +4,3 @@ matplotlib
 plotly
 scipy
 scikit-fem==2023.1.0
-fenics
