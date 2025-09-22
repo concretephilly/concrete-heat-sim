@@ -1,4 +1,4 @@
-# slab_heat_verified.py
+# slab_heat_verified_with_2d.py
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -86,7 +86,7 @@ for n in range(n_steps):
     #   -k*(T_top - T_{N-2})/dz = h*(T_top - T_air)  (backward diff for derivative)
     # Rearranged:
     #   (k + h*dz)*T_top = k*T_{N-2} + h*dz*T_air
-    T_top = (k * T[ -2] + h * dz * ambient_temp) / (k + h * dz)
+    T_top = (k * T[-2] + h * dz * ambient_temp) / (k + h * dz)
     T[-1] = T_top
 
     # record
@@ -177,3 +177,54 @@ st.markdown(
 )
 
 st.markdown("If you still see a flat mid-slab line at the ambient value after running this, please tell me the exact values you used for bed_temp, ambient_temp, sim_hours and the 'store every n steps' setting — I will reproduce and debug step-by-step.")
+
+# ==============================================================
+# ADDITION: 2D CROSS-SECTION
+# ==============================================================
+
+st.subheader("2D Cross-section (heatmap)")
+
+# Geometry in 2D
+Lx = 1.20   # width (m)
+Nz = Nx     # vertical resolution same as 1D
+Nx2d = 121  # horizontal points
+x = np.linspace(0.0, Lx, Nx2d)
+dx = x[1] - x[0]
+
+# stability for 2D
+dt_stab_2d = 1.0 / (2*alpha*(1/dz**2 + 1/dx**2))
+dt2d = 0.9 * dt_stab_2d
+r_z = alpha * dt2d / dz**2
+r_x = alpha * dt2d / dx**2
+
+T2D = np.full((Nz, Nx2d), ambient_temp)
+T2D[0, :] = bed_temp
+
+snapshots = []
+times2d = []
+
+for n in range(n_steps):
+    Tn = T2D.copy()
+    T2D[1:-1, 1:-1] = Tn[1:-1, 1:-1] + r_z*(Tn[2:,1:-1] - 2*Tn[1:-1,1:-1] + Tn[:-2,1:-1]) \
+                                         + r_x*(Tn[1:-1,2:] - 2*Tn[1:-1,1:-1] + Tn[1:-1,:-2])
+    # bottom
+    T2D[0, :] = bed_temp
+    # top convection
+    T2D[-1, :] = (k*T2D[-2,:] + h*dz*ambient_temp) / (k + h*dz)
+    # sides insulated
+    T2D[:, 0] = T2D[:, 1]
+    T2D[:, -1] = T2D[:, -2]
+
+    if n % 200 == 0:  # store snapshots less frequently
+        snapshots.append(T2D.copy())
+        times2d.append(n*dt2d/3600)
+
+if snapshots:
+    idx = st.slider("Select snapshot index (2D)", 0, len(snapshots)-1, 0)
+    fig3, ax3 = plt.subplots()
+    im = ax3.imshow(snapshots[idx], extent=[0,Lx,L,0], aspect="auto", cmap="jet")
+    fig3.colorbar(im, ax=ax3, label="Temperature (°C)")
+    ax3.set_xlabel("Width (m)")
+    ax3.set_ylabel("Depth (m)")
+    ax3.set_title(f"2D temp distribution at {times2d[idx]:.2f} h")
+    st.pyplot(fig3)
