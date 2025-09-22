@@ -7,15 +7,28 @@ st.set_page_config(layout="centered")
 st.title("Verified 1D Heat Conduction — Hollow-Core Slab (CEM III)")
 
 # ------------------------
-# Material & geometry
+# Material & geometry (adjustable via sidebar)
 # ------------------------
-# Typical hollow-core slab / CEM III-ish values (representative)
-rho = 2300.0        # kg/m^3
-cp = 900.0          # J/(kg*K)
-k = 1.4             # W/(m*K)
-alpha = k / (rho * cp)  # m^2/s
+st.sidebar.header("Material properties")
 
-h = 10.0            # convective heat transfer coefficient at top (W/m^2/K), natural convection
+rho = st.sidebar.number_input(
+    "Density ρ (kg/m³)", 1000.0, 4000.0, 2300.0, step=50.0,
+    help="Concrete density (CEM III ≈ 2300 kg/m³ typical)"
+)
+cp = st.sidebar.number_input(
+    "Specific heat c (J/kgK)", 500.0, 2000.0, 900.0, step=10.0,
+    help="Concrete heat capacity (CEM III ≈ 900 J/kgK typical)"
+)
+k = st.sidebar.number_input(
+    "Thermal conductivity k (W/mK)", 0.5, 3.0, 1.4, step=0.1,
+    help="Concrete thermal conductivity (CEM III ≈ 1.4 W/mK typical)"
+)
+h = st.sidebar.number_input(
+    "Convective h (W/m²K)", 1.0, 50.0, 10.0, step=1.0,
+    help="Surface convection coefficient (natural ≈ 10 W/m²K)"
+)
+
+alpha = k / (rho * cp)  # m²/s
 
 L = 0.30            # slab thickness (m)
 Nx = 61             # number of grid points (gives dz ~ 5 mm)
