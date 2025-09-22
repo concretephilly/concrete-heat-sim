@@ -1,4 +1,4 @@
-# slab_heat_verified_with_2d.py
+# slab_heat_verified_with_2d_fixed.py
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -179,52 +179,115 @@ st.markdown(
 st.markdown("If you still see a flat mid-slab line at the ambient value after running this, please tell me the exact values you used for bed_temp, ambient_temp, sim_hours and the 'store every n steps' setting — I will reproduce and debug step-by-step.")
 
 # ==============================================================
-# ADDITION: 2D CROSS-SECTION
+# ADDITION (fixed): 2D CROSS-SECTION (aligned times + bottom at bottom)
 # ==============================================================
 
-st.subheader("2D Cross-section (heatmap)")
+st.subheader("2D Cross-section (heatmap) — aligned to 1D times")
 
-# Geometry in 2D
+# Geometry in 2D (width x depth)
 Lx = 1.20   # width (m)
 Nz = Nx     # vertical resolution same as 1D
-Nx2d = 121  # horizontal points
+Nx2d = 121  # horizontal points (fine enough)
 x = np.linspace(0.0, Lx, Nx2d)
 dx = x[1] - x[0]
 
-# stability for 2D
-dt_stab_2d = 1.0 / (2*alpha*(1/dz**2 + 1/dx**2))
-dt2d = 0.9 * dt_stab_2d
+# 2D explicit stability limit: dt <= 1 / (2*alpha*(1/dz^2 + 1/dx^2))
+dt_stab_2d = 1.0 / (2.0 * alpha * (1.0 / dz**2 + 1.0 / dx**2))
+# choose dt2d <= stability limit; we do NOT change the 1D dt - instead
+# we pick a dt2d that is stable for 2D and then advance the 2D solver
+# until each of the 1D 'times' (which are in hours) is reached, so snapshots
+# line up with the 1D recorded times.
+dt2d = min(dt, 0.9 * dt_stab_2d)
+if dt2d < dt:
+    # Warn that 2D uses smaller internal timestep (still shows snapshots at same physical times)
+    st.sidebar.write(f"2D uses smaller dt for stability: dt2d = {dt2d:.4f} s (1D dt = {dt:.4f} s)")
+
 r_z = alpha * dt2d / dz**2
 r_x = alpha * dt2d / dx**2
 
-T2D = np.full((Nz, Nx2d), ambient_temp)
-T2D[0, :] = bed_temp
+# Initialize 2D temperature field: rows = vertical (z from 0 bottom -> L top), cols = x across width
+T2D = np.full((Nz, Nx2d), ambient_temp, dtype=float)
+T2D[0, :] = bed_temp  # bottom row is bed
 
+# Prepare target snapshot times (in seconds) based on the 1D 'times' list (which are hours)
+if len(times) > 0:
+    target_times_s = [t_h * 3600.0 for t_h in times]  # seconds
+else:
+    # fallback: if 1D had no stored times, pick a few times across sim_hours
+    target_times_s = list(np.linspace(dt, max_time_s, num=20))
+
+# Simulate 2D forward in time using dt2d, and capture snapshots when crossing target times
 snapshots = []
 times2d = []
 
-for n in range(n_steps):
+t_now = 0.0
+target_idx = 0
+last_target = target_times_s[-1]
+
+# Precompute interior indices
+iz_inner = slice(1, Nz - 1)
+ix_inner = slice(1, Nx2d - 1)
+
+# Run until we've captured the last target time (or until a safe maximum)
+max_steps_2d = int(np.ceil(last_target / dt2d)) + 2
+
+for step in range(max_steps_2d):
     Tn = T2D.copy()
-    T2D[1:-1, 1:-1] = Tn[1:-1, 1:-1] + r_z*(Tn[2:,1:-1] - 2*Tn[1:-1,1:-1] + Tn[:-2,1:-1]) \
-                                         + r_x*(Tn[1:-1,2:] - 2*Tn[1:-1,1:-1] + Tn[1:-1,:-2])
-    # bottom
+    # update interior using vectorized 2D explicit scheme
+    T2D[iz_inner, ix_inner] = (
+        Tn[iz_inner, ix_inner]
+        + r_z * (Tn[2:, ix_inner] - 2.0 * Tn[iz_inner, ix_inner] + Tn[:-2, ix_inner])
+        + r_x * (Tn[iz_inner, 2:] - 2.0 * Tn[iz_inner, ix_inner] + Tn[iz_inner, :-2])
+    )
+
+    # bottom row fixed to bed
     T2D[0, :] = bed_temp
-    # top convection
-    T2D[-1, :] = (k*T2D[-2,:] + h*dz*ambient_temp) / (k + h*dz)
-    # sides insulated
+
+    # top row: apply convection algebraic relation (use updated T2D[-2,:])
+    # (k + h*dz) * T_top = k*T_{N-2} + h*dz*T_air  -> same as 1D top BC
+    T2D[-1, :] = (k * T2D[-2, :] + h * dz * ambient_temp) / (k + h * dz)
+
+    # insulated sides (Neumann 0): copy neighbors
     T2D[:, 0] = T2D[:, 1]
     T2D[:, -1] = T2D[:, -2]
 
-    if n % 200 == 0:  # store snapshots less frequently
-        snapshots.append(T2D.copy())
-        times2d.append(n*dt2d/3600)
+    t_now += dt2d
 
+    # If we've reached or passed the next target snapshot time, store snapshot(s)
+    while target_idx < len(target_times_s) and t_now + 1e-12 >= target_times_s[target_idx]:
+        snapshots.append(T2D.copy())
+        times2d.append(target_times_s[target_idx] / 3600.0)  # hours
+        target_idx += 1
+
+    if target_idx >= len(target_times_s):
+        break
+
+# Ensure at least one snapshot exists
+if len(snapshots) == 0:
+    snapshots.append(T2D.copy())
+    times2d.append(t_now / 3600.0)
+
+# Consistent color scaling across snapshots: use global min/max (1D final + 2D snapshots)
+all_min = min(ambient_temp, float(np.min(T_final)), float(np.min(snapshots[-1])))
+all_max = max(bed_temp, float(np.max(T_final)), float(np.max(snapshots[-1])))
+
+# Plot selector and heatmap (origin='lower' to put bed at bottom)
 if snapshots:
     idx = st.slider("Select snapshot index (2D)", 0, len(snapshots)-1, 0)
-    fig3, ax3 = plt.subplots()
-    im = ax3.imshow(snapshots[idx], extent=[0,Lx,L,0], aspect="auto", cmap="jet")
+    fig3, ax3 = plt.subplots(figsize=(6, 4))
+    im = ax3.imshow(
+        snapshots[idx],
+        origin='lower',                      # row 0 (bed) is displayed at bottom
+        extent=[0.0, Lx, 0.0, L],            # x from 0..Lx, y from 0..L (bottom->top)
+        aspect='auto',
+        cmap='jet',
+        vmin=all_min,
+        vmax=all_max
+    )
     fig3.colorbar(im, ax=ax3, label="Temperature (°C)")
     ax3.set_xlabel("Width (m)")
-    ax3.set_ylabel("Depth (m)")
+    ax3.set_ylabel("Depth (m) from bed (bottom=0)")
     ax3.set_title(f"2D temp distribution at {times2d[idx]:.2f} h")
     st.pyplot(fig3)
+else:
+    st.write("No 2D snapshots available.")
