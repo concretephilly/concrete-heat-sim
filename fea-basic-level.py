@@ -4,35 +4,36 @@ import matplotlib.pyplot as plt
 
 st.title("Heat Conduction in CEM III Concrete Slab")
 
-# Slab and material properties (CEM III concrete, representative)
+# --- Slab and material properties (CEM III concrete, representative) ---
 thickness = 0.3    # m
 rho = 2350         # kg/m3
 cp = 900           # J/kgK
 k = 1.8            # W/mK
 alpha = k / (rho * cp)
 
-# Discretization
+# --- Discretization ---
 Nx = 61
 dz = thickness / (Nx - 1)
 dt = 5.0  # seconds, chosen for stability
 max_time = 8 * 3600  # simulate up to 8 hours
 
-# User sliders
+# --- User sliders ---
 bed_temp = st.slider("Heated Bed Temperature (°C)", 20, 80, 50)
 ambient_temp = st.slider("Ambient (Top) Temperature (°C)", 5, 25, 20)
 
-# Initial condition
+# --- Initial condition ---
 T_init = ambient_temp
 T = np.full(Nx, T_init)
 
-# Track time to near-bed temperature
+# --- Tracking ---
 target_temp = bed_temp - 1.0  # within 1°C of bed
 time_to_target = None
-
-# Save snapshots for plotting
+mid_temps = []   # mid-slab temperature vs. time
+times = []       # time points
 snapshots = {}
-snapshot_times = [600, 1800, 3600, 7200, 14400, max_time]  # 10min, 30min, 1h, 2h, 4h, 8h
+snapshot_times = [600, 1800, 3600, 7200, 14400, max_time]
 
+# --- Time stepping ---
 for n in range(int(max_time / dt)):
     Tn = T.copy()
     Tn[0] = bed_temp
@@ -42,26 +43,38 @@ for n in range(int(max_time / dt)):
     T[0] = bed_temp
     T[-1] = ambient_temp
 
-    # record snapshots
-    t_now = (n+1) * dt
+    t_now = (n + 1) * dt
+    mid_temps.append(T[Nx//2])
+    times.append(t_now / 3600)  # hours
+
     if t_now in snapshot_times:
         snapshots[t_now] = T.copy()
 
-    # check if mid-depth reached target
     if time_to_target is None and T[Nx//2] >= target_temp:
         time_to_target = t_now
 
-# Plot snapshots
+# --- Plot depth profiles ---
 z = np.linspace(0, thickness, Nx)
-fig, ax = plt.subplots()
+fig1, ax1 = plt.subplots()
 for t, profile in snapshots.items():
-    ax.plot(z, profile, label=f"{int(t/60)} min")
-ax.set_xlabel("Depth (m) from heated bed")
-ax.set_ylabel("Temperature (°C)")
-ax.legend()
-st.pyplot(fig)
+    ax1.plot(z, profile, label=f"{int(t/60)} min")
+ax1.set_xlabel("Depth (m) from heated bed")
+ax1.set_ylabel("Temperature (°C)")
+ax1.legend()
+st.pyplot(fig1)
 
-# Show results
+# --- Plot mid-slab temperature vs time ---
+fig2, ax2 = plt.subplots()
+ax2.plot(times, mid_temps, label="Mid-slab temperature")
+ax2.axhline(bed_temp, color="r", linestyle="--", label="Bed temperature")
+ax2.set_xlabel("Time (hours)")
+ax2.set_ylabel("Temperature (°C)")
+ax2.set_ylim(min(ambient_temp, min(mid_temps)) - 2,
+             max(bed_temp, max(mid_temps)) + 2)
+ax2.legend()
+st.pyplot(fig2)
+
+# --- Results ---
 if time_to_target:
     hours = int(time_to_target // 3600)
     minutes = int((time_to_target % 3600) // 60)
@@ -69,8 +82,8 @@ if time_to_target:
 else:
     st.warning("Mid-slab did not reach near-bed temperature within 8 hours.")
 
-# Certainty estimate
+# --- Certainty estimate ---
 st.info("Simulation certainty: ~65%.\n"
-        "- Good for relative trends.\n"
-        "- Simplifies geometry (no hollow cores), ignores hydration heat, convection, radiation.\n"
-        "- Based on typical CEM III concrete properties.")
+        "- Based on typical CEM III concrete properties.\n"
+        "- 1D conduction only (no hollow cores, no hydration heat, no convection/radiation).\n"
+        "- Good for trends, not exact curing prediction.")
