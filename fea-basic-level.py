@@ -15,7 +15,7 @@ alpha = k / (rho * cp)
 Nx = 61
 dz = thickness / (Nx - 1)
 dt = 5.0  # seconds, chosen for stability
-max_time = 8 * 3600  # simulate up to 8 hours
+max_time = 24 * 3600  # simulate up to 24 hours
 
 # --- User sliders ---
 bed_temp = st.slider("Heated Bed Temperature (°C)", 20, 80, 50)
@@ -29,9 +29,9 @@ T = np.full(Nx, T_init)
 target_temp = bed_temp - 1.0  # within 1°C of bed
 time_to_target = None
 mid_temps = []   # mid-slab temperature vs. time
-times = []       # time points
+times = []       # time points (hours)
 snapshots = {}
-snapshot_times = [600, 1800, 3600, 7200, 14400, max_time]
+snapshot_times = [3600, 7200, 14400, 28800, 43200, 86400]  # 1h, 2h, 4h, 8h, 12h, 24h
 
 # --- Time stepping ---
 for n in range(int(max_time / dt)):
@@ -45,7 +45,7 @@ for n in range(int(max_time / dt)):
 
     t_now = (n + 1) * dt
     mid_temps.append(T[Nx//2])
-    times.append(t_now / 3600)  # hours
+    times.append(t_now / 3600)  # convert to hours
 
     if t_now in snapshot_times:
         snapshots[t_now] = T.copy()
@@ -53,11 +53,11 @@ for n in range(int(max_time / dt)):
     if time_to_target is None and T[Nx//2] >= target_temp:
         time_to_target = t_now
 
-# --- Plot depth profiles ---
+# --- Plot depth profiles at selected times ---
 z = np.linspace(0, thickness, Nx)
 fig1, ax1 = plt.subplots()
 for t, profile in snapshots.items():
-    ax1.plot(z, profile, label=f"{int(t/60)} min")
+    ax1.plot(z, profile, label=f"{int(t/3600)} h")
 ax1.set_xlabel("Depth (m) from heated bed")
 ax1.set_ylabel("Temperature (°C)")
 ax1.legend()
@@ -67,6 +67,8 @@ st.pyplot(fig1)
 fig2, ax2 = plt.subplots()
 ax2.plot(times, mid_temps, label="Mid-slab temperature")
 ax2.axhline(bed_temp, color="r", linestyle="--", label="Bed temperature")
+if time_to_target:
+    ax2.axvline(time_to_target/3600, color="g", linestyle="--", label="Time to target")
 ax2.set_xlabel("Time (hours)")
 ax2.set_ylabel("Temperature (°C)")
 ax2.set_ylim(min(ambient_temp, min(mid_temps)) - 2,
@@ -80,7 +82,7 @@ if time_to_target:
     minutes = int((time_to_target % 3600) // 60)
     st.success(f"Mid-slab warms to within 1°C of bed in ~{hours}h {minutes}min.")
 else:
-    st.warning("Mid-slab did not reach near-bed temperature within 8 hours.")
+    st.warning("Mid-slab did not reach near-bed temperature within 24 hours.")
 
 # --- Certainty estimate ---
 st.info("Simulation certainty: ~65%.\n"
