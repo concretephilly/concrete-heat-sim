@@ -189,8 +189,6 @@ st.markdown(
     "- If you want to compare *absolute time to reach the bed temperature itself* (not a fraction of equilibrium), note that the mid-slab often never reaches the bed temperature unless ambient ≈ bed (because heat must escape at the top)."
 )
 
-st.markdown("If you still see a flat mid-slab line at the ambient value after running this, please tell me the exact values you used for bed_temp, ambient_temp, sim_hours and the 'store every n steps' setting — I will reproduce and debug step-by-step.")
-
 # ==============================================================
 # ADDITION (fixed): 2D CROSS-SECTION (aligned times + bottom at bottom)
 # ==============================================================
