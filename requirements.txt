@@ -3,7 +3,8 @@ numpy
 matplotlib
 plotly
 scipy
-fenics==2019.1.0
+scikit-fem
+
 
 
 
