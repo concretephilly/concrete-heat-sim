@@ -3,4 +3,7 @@ numpy
 matplotlib
 plotly
 scipy
-fenics
+fenics==2019.1.0
+
+
+
