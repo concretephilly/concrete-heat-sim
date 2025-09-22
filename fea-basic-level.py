@@ -9,7 +9,7 @@ thickness = 0.3    # m
 rho = 2350         # kg/m3
 cp = 900           # J/kgK
 k = 1.8            # W/mK
-alpha = k / (rho * cp)
+alpha = k / (rho * cp)   # thermal diffusivity
 
 # --- Discretization ---
 Nx = 61
@@ -33,6 +33,7 @@ T_equil = bed_temp + (ambient_temp - bed_temp) * (z / thickness)
 max_time = sim_hours * 3600
 mid_temps = []
 times = []
+
 for n in range(int(max_time / dt)):
     Tn = T.copy()
     Tn[0] = bed_temp
@@ -42,12 +43,16 @@ for n in range(int(max_time / dt)):
     T[0] = bed_temp
     T[-1] = ambient_temp
 
-    if n % 200 == 0:  # store every ~1000 s
-        t_now = (n + 1) * dt
-        mid_temps.append(T[Nx//2])
-        times.append(t_now / 3600)  # hours
+    # record mid-slab temperature every step
+    t_now = (n + 1) * dt
+    mid_temps.append(T[Nx//2])
+    times.append(t_now / 3600)  # hours
 
-# --- Plot depth profile (end state + equilibrium) ---
+# --- Reduce plotting density (every 60th point ~5 min) ---
+times_plot = times[::60]
+mid_temps_plot = mid_temps[::60]
+
+# --- Plot depth profile (final vs equilibrium) ---
 fig1, ax1 = plt.subplots()
 ax1.plot(z, T, "r-", label=f"After {sim_hours} h")
 ax1.plot(z, T_equil, "k--", label="Equilibrium (linear)")
@@ -58,12 +63,12 @@ st.pyplot(fig1)
 
 # --- Plot mid-slab temperature vs time ---
 fig2, ax2 = plt.subplots()
-ax2.plot(times, mid_temps, label="Mid-slab temperature")
+ax2.plot(times_plot, mid_temps_plot, label="Mid-slab temperature")
 ax2.axhline(T_equil[Nx//2], color="k", linestyle="--", label="Equilibrium mid-slab")
 ax2.set_xlabel("Time (hours)")
 ax2.set_ylabel("Temperature (°C)")
-ax2.set_ylim(min(ambient_temp, min(mid_temps)) - 2,
-             max(bed_temp, max(mid_temps)) + 2)
+ax2.set_ylim(min(ambient_temp, min(mid_temps_plot)) - 2,
+             max(bed_temp, max(mid_temps_plot)) + 2)
 ax2.legend()
 st.pyplot(fig2)
 
@@ -72,4 +77,4 @@ st.success(f"Equilibrium mid-slab temperature ≈ {T_equil[Nx//2]:.1f} °C")
 st.info("Simulation certainty: ~65%.\n"
         "- Based on typical CEM III concrete properties.\n"
         "- 1D conduction only (no hollow cores, no hydration heat, no convection/radiation).\n"
-        "- Captures realistic time scale (~30 h for 300 mm slab).")
+        "- Captures realistic diffusion time scale (~30 h for 300 mm slab).")
