@@ -43,20 +43,17 @@ def layout_floorplan(width, length, slab_width, available_lengths, min_cut=0.6):
         "total_pieces": total_pieces
     }
 
-# --- Streamlit UI ---
-st.title("Hollow-core Slab Planner")
+# --- Streamlit App ---
+st.title("🧱 Hollow-core Slab Planner")
 
-with st.sidebar:
-    st.header("Input Parameters")
-    floor_width = st.number_input("Floor Width (m)", min_value=1.0, value=6.0, step=0.1)
-    floor_length = st.number_input("Floor Length (m)", min_value=1.0, value=10.0, step=0.1)
-    slab_width = st.number_input("Slab Width (m)", min_value=0.1, value=1.2, step=0.1)
-    available_lengths = st.text_input("Available Slab Lengths (comma separated)", "3,4,6,8,10,12")
-    min_cut = st.number_input("Minimum Cut Length (m)", min_value=0.1, value=0.6, step=0.1)
+st.sidebar.header("Input Parameters")
+floor_width = st.sidebar.number_input("Floor Width (m)", min_value=1.0, value=6.0, step=0.1)
+floor_length = st.sidebar.number_input("Floor Length (m)", min_value=1.0, value=10.0, step=0.1)
+slab_width = st.sidebar.number_input("Slab Width (m)", min_value=0.1, value=1.2, step=0.1)
+available_lengths = st.sidebar.text_input("Available Slab Lengths (comma separated)", "3,4,6,8,10,12")
+min_cut = st.sidebar.number_input("Minimum Cut Length (m)", min_value=0.1, value=0.6, step=0.1)
 
-    run_button = st.button("Run")
-
-if run_button:
+if st.sidebar.button("Run"):
     try:
         avail_lengths = [float(x.strip()) for x in available_lengths.split(",") if x.strip()]
         solution = layout_floorplan(floor_width, floor_length, slab_width, avail_lengths, min_cut)
@@ -67,7 +64,7 @@ if run_button:
     if not solution:
         st.error("No valid layout found with given parameters.")
     else:
-        st.success(f"Total pieces: {solution['total_pieces']}")
+        st.success(f"✅ Total pieces: {solution['total_pieces']}")
 
         # Plot layout
         fig, ax = plt.subplots(figsize=(8, 5))
