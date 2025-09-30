@@ -1,85 +1,77 @@
 import streamlit as st
+from streamlit_drawable_canvas import st_canvas
+import numpy as np
 import matplotlib.pyplot as plt
-import math
 
-# --- Core slab placement logic ---
-def cover_length_with_slabs(target_length, available_lengths, min_cut=0.6):
-    available_lengths = sorted(available_lengths, reverse=True)
-    result = []
-    remaining = target_length
-    for L in available_lengths:
-        while remaining >= L:
-            result.append(L)
-            remaining -= L
-    # handle remainder
-    if remaining > 0:
-        for L in available_lengths:
-            if L - remaining >= min_cut:
-                result.append(remaining)
-                remaining = 0
-                break
-    return result if remaining == 0 else None
+st.set_page_config(page_title="Slab Layout Optimizer", layout="wide")
 
-def layout_floorplan(width, length, slab_width, available_lengths, min_cut=0.6):
-    rows = math.floor(width / slab_width)
-    remainder = width - rows * slab_width
-    row_widths = [slab_width] * rows
-    if remainder >= min_cut:
-        row_widths.append(remainder)
+st.title("🧱 Concrete Slab Layout Optimizer")
 
-    placements = []
-    total_pieces = 0
-    for idx, rw in enumerate(row_widths):
-        row = cover_length_with_slabs(length, available_lengths, min_cut)
-        if not row:
-            return None
-        placements.append(row)
-        total_pieces += len(row)
+# Step 1: Draw site boundaries
+st.subheader("1. Draw your site area")
+canvas_result = st_canvas(
+    fill_color="rgba(255, 165, 0, 0.3)",  # Transparent orange fill
+    stroke_width=2,
+    stroke_color="#000000",
+    background_color="#FFFFFF",
+    height=400,
+    width=600,
+    drawing_mode="rect",  # Draw rectangles for area
+    key="canvas",
+)
 
-    return {
-        "rows": row_widths,
-        "placements": placements,
-        "total_pieces": total_pieces
-    }
+# Step 2: Slab parameters
+st.subheader("2. Enter slab parameters")
+slab_length = st.number_input("Slab length (m)", min_value=0.1, value=2.0, step=0.1)
+slab_width = st.number_input("Slab width (m)", min_value=0.1, value=1.0, step=0.1)
+slab_count = st.number_input("Number of slabs", min_value=1, value=10, step=1)
 
-# --- Streamlit App ---
-st.title("🧱 Hollow-core Slab Planner")
+# Step 3: Run optimizer
+if st.button("Run Optimization"):
+    st.subheader("3. Optimized Layout Plan")
 
-st.sidebar.header("Input Parameters")
-floor_width = st.sidebar.number_input("Floor Width (m)", min_value=1.0, value=6.0, step=0.1)
-floor_length = st.sidebar.number_input("Floor Length (m)", min_value=1.0, value=10.0, step=0.1)
-slab_width = st.sidebar.number_input("Slab Width (m)", min_value=0.1, value=1.2, step=0.1)
-available_lengths = st.sidebar.text_input("Available Slab Lengths (comma separated)", "3,4,6,8,10,12")
-min_cut = st.sidebar.number_input("Minimum Cut Length (m)", min_value=0.1, value=0.6, step=0.1)
-
-if st.sidebar.button("Run"):
-    try:
-        avail_lengths = [float(x.strip()) for x in available_lengths.split(",") if x.strip()]
-        solution = layout_floorplan(floor_width, floor_length, slab_width, avail_lengths, min_cut)
-    except Exception as e:
-        st.error(f"Invalid input: {e}")
-        solution = None
-
-    if not solution:
-        st.error("No valid layout found with given parameters.")
+    if canvas_result.json_data is None:
+        st.warning("⚠️ Please draw your site boundary first.")
     else:
-        st.success(f"✅ Total pieces: {solution['total_pieces']}")
+        # Extract bounding box of drawn site
+        objs = canvas_result.json_data["objects"]
+        if not objs:
+            st.warning("⚠️ No boundary drawn.")
+        else:
+            site = objs[0]  # take the first rectangle drawn
+            x, y, w, h = site["left"], site["top"], site["width"], site["height"]
 
-        # Plot layout
-        fig, ax = plt.subplots(figsize=(8, 5))
-        ax.set_aspect("equal")
-        ax.set_xlim(0, floor_length)
-        ax.set_ylim(0, floor_width)
-        ax.set_title(f"Optimised Layout - {solution['total_pieces']} pieces")
+            # Convert site dimensions to meters (arbitrary scaling factor)
+            scale = 0.05  # pixels to meters
+            site_w, site_h = w * scale, h * scale
 
-        y = 0
-        for row_w, pieces in zip(solution["rows"], solution["placements"]):
-            x = 0
-            for p in pieces:
-                rect = plt.Rectangle((x, y), p, row_w, fill=None, edgecolor="blue")
-                ax.add_patch(rect)
-                x += p
-            y += row_w
+            # Greedy packing algorithm: place slabs row by row
+            layout = []
+            x_pos, y_pos = 0, 0
+            used_slabs = 0
 
-        st.pyplot(fig)
-```
+            while y_pos + slab_width <= site_h and used_slabs < slab_count:
+                while x_pos + slab_length <= site_w and used_slabs < slab_count:
+                    layout.append((x_pos, y_pos))
+                    x_pos += slab_length
+                    used_slabs += 1
+                x_pos = 0
+                y_pos += slab_width
+
+            # Plot the optimized layout
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.set_xlim(0, site_w)
+            ax.set_ylim(0, site_h)
+            ax.set_aspect('equal')
+
+            # Draw site boundary
+            ax.add_patch(plt.Rectangle((0, 0), site_w, site_h, fill=None, edgecolor='black', linewidth=2))
+
+            # Draw slabs
+            for (x_pos, y_pos) in layout:
+                ax.add_patch(plt.Rectangle((x_pos, y_pos), slab_length, slab_width, fill=True, alpha=0.5))
+
+            ax.set_title("Optimized Slab Placement")
+            st.pyplot(fig)
+
+            st.success(f"✅ Used {used_slabs} slabs out of {slab_count} available.")
