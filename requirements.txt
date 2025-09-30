@@ -2,5 +2,6 @@ streamlit
 numpy
 matplotlib
 plotly
-math
+
+
 
